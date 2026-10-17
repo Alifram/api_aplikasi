@@ -2,65 +2,57 @@
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: GET, OPTIONS");
 header("Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With");
+header("Content-Type: application/json; charset=UTF-8");
 
-if ($_SERVER['REQUEST_METHOD'] == 'OPTIONS') exit(0);
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+    exit(0);
+}
+
 include "koneksi.php";
 
-// Menangkap parameter ID siswa yang dikirim dari Flutter Orang Tua
-$siswa_id = isset($_GET['siswa_id']) ? mysqli_real_escape_string($koneksi, $_GET['siswa_id']) : '';
-
-if (!empty($siswa_id)) {
-    // Mengambil riwayat nilai raport siswa dan menggabungkannya dengan nama guru penilai
-    $query = "SELECT base.siswa_id, base.semester, base.kelas, base.tahun_angkatan,
-                     base.mata_pelajaran,
-                     (SELECT n2.nilai_tugas FROM nilai_raport n2
-                      WHERE n2.siswa_id = base.siswa_id AND n2.semester = base.semester
-                        AND n2.kelas = base.kelas AND n2.tahun_angkatan = base.tahun_angkatan
-                        AND n2.mata_pelajaran = base.mata_pelajaran AND n2.nilai_tugas IS NOT NULL
-                      ORDER BY n2.id DESC LIMIT 1) AS nilai_tugas,
-                     (SELECT n2.nilai_uts FROM nilai_raport n2
-                      WHERE n2.siswa_id = base.siswa_id AND n2.semester = base.semester
-                        AND n2.kelas = base.kelas AND n2.tahun_angkatan = base.tahun_angkatan
-                        AND n2.mata_pelajaran = base.mata_pelajaran AND n2.nilai_uts IS NOT NULL
-                      ORDER BY n2.id DESC LIMIT 1) AS nilai_uts,
-                     (SELECT n2.nilai_uas FROM nilai_raport n2
-                      WHERE n2.siswa_id = base.siswa_id AND n2.semester = base.semester
-                        AND n2.kelas = base.kelas AND n2.tahun_angkatan = base.tahun_angkatan
-                        AND n2.mata_pelajaran = base.mata_pelajaran AND n2.nilai_uas IS NOT NULL
-                      ORDER BY n2.id DESC LIMIT 1) AS nilai_uas,
-                     (SELECT n2.keterangan FROM nilai_raport n2
-                      WHERE n2.siswa_id = base.siswa_id AND n2.semester = base.semester
-                        AND n2.kelas = base.kelas AND n2.tahun_angkatan = base.tahun_angkatan
-                        AND n2.mata_pelajaran = base.mata_pelajaran
-                      ORDER BY n2.id DESC LIMIT 1) AS keterangan,
-                     (SELECT u.nama_lengkap FROM nilai_raport n2
-                      JOIN users u ON n2.guru_id = u.id
-                      WHERE n2.siswa_id = base.siswa_id AND n2.semester = base.semester
-                        AND n2.kelas = base.kelas AND n2.tahun_angkatan = base.tahun_angkatan
-                        AND n2.mata_pelajaran = base.mata_pelajaran
-                      ORDER BY n2.id DESC LIMIT 1) AS nama_guru
-              FROM (
-                  SELECT DISTINCT siswa_id, semester, kelas, tahun_angkatan, mata_pelajaran
-                  FROM nilai_raport
-                  WHERE siswa_id = '$siswa_id'
-              ) base
-              ORDER BY base.tahun_angkatan ASC, base.kelas ASC,
-                       base.semester ASC, base.mata_pelajaran ASC";
-              
-    $result = mysqli_query($koneksi, $query);
-    $rapor = [];
-
-    if ($result === false) {
-        http_response_code(500);
-        echo json_encode(["status" => "error", "message" => "Gagal mengambil data rapor."]);
-        exit();
-    }
-
-    while ($row = mysqli_fetch_assoc($result)) {
-        $rapor[] = $row;
-    }
-    echo json_encode(["status" => "success", "data" => $rapor]);
-} else {
-    echo json_encode(["status" => "error", "message" => "Parameter ID Siswa kosong."]);
+$studentId = isset($_GET['siswa_id'])
+    ? filter_var($_GET['siswa_id'], FILTER_VALIDATE_INT)
+    : false;
+if ($studentId === false || $studentId <= 0) {
+    http_response_code(400);
+    echo json_encode(["status" => "error", "message" => "ID siswa tidak valid."]);
+    exit();
 }
+
+$stmt = mysqli_prepare(
+    $koneksi,
+    "SELECT n.siswa_id, n.semester, k.nama AS kelas,
+            n.tahun_angkatan, mp.nama AS mata_pelajaran,
+            n.nilai_tugas, n.nilai_uts, n.nilai_uas, n.keterangan,
+            guru.nama_lengkap AS nama_guru, n.kelas_mapel_id
+     FROM nilai_raport n
+     JOIN kelas_mapel km ON km.id = n.kelas_mapel_id
+     JOIN kelas k ON k.id = km.kelas_id
+     JOIN mata_pelajaran mp ON mp.id = km.mata_pelajaran_id
+     JOIN users guru ON guru.id = n.guru_id
+     WHERE n.siswa_id = ?
+     ORDER BY n.tahun_angkatan ASC, k.nama ASC, n.semester ASC, mp.nama ASC"
+);
+if ($stmt === false) {
+    http_response_code(500);
+    echo json_encode(["status" => "error", "message" => "Gagal menyiapkan data rapor."]);
+    exit();
+}
+mysqli_stmt_bind_param($stmt, "i", $studentId);
+if (!mysqli_stmt_execute($stmt)) {
+    mysqli_stmt_close($stmt);
+    http_response_code(500);
+    echo json_encode(["status" => "error", "message" => "Gagal mengambil data rapor."]);
+    exit();
+}
+
+$result = mysqli_stmt_get_result($stmt);
+$grades = [];
+while ($row = mysqli_fetch_assoc($result)) {
+    $grades[] = $row;
+}
+mysqli_stmt_close($stmt);
+
+echo json_encode(["status" => "success", "data" => $grades]);
+mysqli_close($koneksi);
 ?>

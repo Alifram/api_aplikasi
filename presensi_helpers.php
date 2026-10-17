@@ -18,7 +18,7 @@ function presensi_get_actor($koneksi, $userId)
 
     $stmt = mysqli_prepare(
         $koneksi,
-        "SELECT id, role, kelas_diajar
+        "SELECT id, role, kelas_id
          FROM users
          WHERE id = ? AND is_deleted = 0
          LIMIT 1"
@@ -47,11 +47,8 @@ function presensi_valid_date($value)
     return $date !== false && $date->format('Y-m-d') === $value;
 }
 
-function presensi_valid_class($value)
+function presensi_valid_class_id($value)
 {
-    return is_string($value) &&
-        in_array($value, [
-            'Kelas 1', 'Kelas 2', 'Kelas 3',
-            'Kelas 4', 'Kelas 5', 'Kelas 6'
-        ], true);
+    return filter_var($value, FILTER_VALIDATE_INT) !== false &&
+        (int)$value > 0;
 }

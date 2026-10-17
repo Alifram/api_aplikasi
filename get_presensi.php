@@ -22,17 +22,22 @@ if ($actor === null) {
     exit();
 }
 
-$requestedClass = $_GET['kelas'] ?? '';
+$requestedClassId = isset($_GET['kelas_id'])
+    ? filter_var($_GET['kelas_id'], FILTER_VALIDATE_INT)
+    : null;
 $date = $_GET['tanggal'] ?? '';
 $filters = ["1 = 1"];
 $types = '';
 $values = [];
 
-if ($date !== '') {
-    if (!presensi_valid_date($date)) {
-        presensi_send_json("error", "Format tanggal harus YYYY-MM-DD.", 400);
-        exit();
-    }
+if ($date !== '' && !presensi_valid_date($date)) {
+    presensi_send_json("error", "Format tanggal harus YYYY-MM-DD.", 400);
+    exit();
+}
+if (isset($_GET['kelas_id']) &&
+    ($requestedClassId === false || $requestedClassId <= 0)) {
+    presensi_send_json("error", "ID kelas tidak valid.", 400);
+    exit();
 }
 
 if ($actor['role'] === 'siswa') {
@@ -40,27 +45,23 @@ if ($actor['role'] === 'siswa') {
     $types .= 'i';
     $values[] = (int)$actor['id'];
 } elseif ($actor['role'] === 'guru') {
-    $teacherClass = trim((string)$actor['kelas_diajar']);
-    if (!presensi_valid_class($teacherClass)) {
+    $teacherClassId = (int)$actor['kelas_id'];
+    if ($teacherClassId <= 0) {
         presensi_send_json("error", "Kelas akun guru belum diatur.", 403);
         exit();
     }
-    if ($requestedClass !== '' && $requestedClass !== $teacherClass) {
+    if ($requestedClassId !== null && $requestedClassId !== $teacherClassId) {
         presensi_send_json("error", "Guru hanya dapat melihat presensi kelasnya.", 403);
         exit();
     }
-    $filters[] = "s.kelas = ?";
-    $types .= 's';
-    $values[] = $teacherClass;
+    $filters[] = "s.kelas_id = ?";
+    $types .= 'i';
+    $values[] = $teacherClassId;
 } elseif ($actor['role'] === 'admin') {
-    if ($requestedClass !== '') {
-        if (!presensi_valid_class($requestedClass)) {
-            presensi_send_json("error", "Kelas tidak valid.", 400);
-            exit();
-        }
-        $filters[] = "s.kelas = ?";
-        $types .= 's';
-        $values[] = $requestedClass;
+    if ($requestedClassId !== null) {
+        $filters[] = "s.kelas_id = ?";
+        $types .= 'i';
+        $values[] = $requestedClassId;
     }
 } else {
     presensi_send_json("error", "Role akun tidak diizinkan melihat presensi.", 403);
@@ -73,7 +74,8 @@ if ($date !== '') {
     $values[] = $date;
 }
 
-$query = "SELECT s.id AS sesi_id, s.tanggal, s.kelas, s.guru_id,
+$query = "SELECT s.id AS sesi_id, s.tanggal, s.kelas_id,
+                 k.nama AS kelas, s.guru_id,
                  guru.nama_lengkap AS nama_guru,
                  siswa.id AS siswa_id, siswa.nomor_induk, siswa.nama_lengkap AS nama_siswa,
                  d.status, d.catatan
@@ -81,8 +83,9 @@ $query = "SELECT s.id AS sesi_id, s.tanggal, s.kelas, s.guru_id,
           JOIN presensi_detail d ON d.sesi_id = s.id
           JOIN users siswa ON siswa.id = d.siswa_id
           JOIN users guru ON guru.id = s.guru_id
+          JOIN kelas k ON k.id = s.kelas_id
           WHERE " . implode(" AND ", $filters) . "
-          ORDER BY s.tanggal DESC, s.kelas ASC, siswa.nama_lengkap ASC
+          ORDER BY s.tanggal DESC, k.nama ASC, siswa.nama_lengkap ASC
           LIMIT 501";
 $stmt = mysqli_prepare($koneksi, $query);
 if ($stmt === false) {

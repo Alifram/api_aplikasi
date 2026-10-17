@@ -12,23 +12,20 @@ include "koneksi.php";
 include "jadwal_helpers.php";
 
 $input = json_decode(file_get_contents('php://input'), true);
-$kelasValid = ['Kelas 1', 'Kelas 2', 'Kelas 3', 'Kelas 4', 'Kelas 5', 'Kelas 6'];
-$hariValid = ['Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
-$required = ['kelas', 'hari', 'jam_mulai', 'jam_selesai', 'mata_pelajaran', 'guru_pengampu', 'ruangan'];
-
 if (!is_array($input)) {
     http_response_code(400);
     echo json_encode(["status" => "error", "message" => "Format JSON tidak valid."]);
     exit();
 }
-if (!isset($input['user_id'])) {
-    http_response_code(401);
-    echo json_encode(["status" => "error", "message" => "Akun admin tidak valid."]);
+if (!isset($input['user_id']) || !jadwal_require_admin($koneksi, $input['user_id'])) {
+    if (!isset($input['user_id'])) {
+        http_response_code(401);
+        echo json_encode(["status" => "error", "message" => "Akun admin tidak valid."]);
+    }
     exit();
 }
-if (!jadwal_require_admin($koneksi, $input['user_id'])) {
-    exit();
-}
+
+$required = ['kelas_mapel_id', 'hari', 'jam_mulai', 'jam_selesai', 'ruangan'];
 foreach ($required as $field) {
     if (!isset($input[$field]) || !is_scalar($input[$field]) || trim((string)$input[$field]) === '') {
         http_response_code(400);
@@ -37,15 +34,7 @@ foreach ($required as $field) {
     }
 }
 
-$kelas = trim($input['kelas']);
-$hari = trim($input['hari']);
-$mulai = trim($input['jam_mulai']);
-$selesai = trim($input['jam_selesai']);
-$mulai = strlen($mulai) === 5 ? $mulai . ':00' : $mulai;
-$selesai = strlen($selesai) === 5 ? $selesai . ':00' : $selesai;
-$mapel = trim($input['mata_pelajaran']);
-$guru = trim($input['guru_pengampu']);
-$ruangan = trim($input['ruangan']);
+$assignmentId = filter_var($input['kelas_mapel_id'], FILTER_VALIDATE_INT);
 $scheduleId = null;
 if (isset($input['id'])) {
     $scheduleId = filter_var($input['id'], FILTER_VALIDATE_INT);
@@ -55,25 +44,64 @@ if (isset($input['id'])) {
         exit();
     }
 }
+$hari = trim((string)$input['hari']);
+$mulai = trim((string)$input['jam_mulai']);
+$selesai = trim((string)$input['jam_selesai']);
+$ruangan = trim((string)$input['ruangan']);
+$mulai = strlen($mulai) === 5 ? $mulai . ':00' : $mulai;
+$selesai = strlen($selesai) === 5 ? $selesai . ':00' : $selesai;
+$hariValid = ['Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
 $timePattern = '/^(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?$/';
 
-if (!in_array($kelas, $kelasValid, true) ||
+if ($assignmentId === false || $assignmentId <= 0 ||
     !in_array($hari, $hariValid, true) ||
     !preg_match($timePattern, $mulai) ||
     !preg_match($timePattern, $selesai) ||
-    $mulai >= $selesai) {
+    $mulai >= $selesai ||
+    $ruangan === '') {
     http_response_code(400);
-    echo json_encode(["status" => "error", "message" => "Kelas, hari, atau rentang waktu jadwal tidak valid."]);
+    echo json_encode(["status" => "error", "message" => "Penugasan, hari, atau rentang waktu jadwal tidak valid."]);
     exit();
 }
 
 mysqli_begin_transaction($koneksi);
 
+$assignment = mysqli_prepare(
+    $koneksi,
+    "SELECT km.kelas_id, km.guru_id, km.tahun_ajaran
+     FROM kelas_mapel km
+     JOIN kelas k ON k.id = km.kelas_id AND k.aktif = 1
+     JOIN mata_pelajaran mp ON mp.id = km.mata_pelajaran_id AND mp.aktif = 1
+     JOIN users u ON u.id = km.guru_id AND u.role = 'guru' AND u.is_deleted = 0
+     WHERE km.id = ? AND km.aktif = 1
+     LIMIT 1 FOR UPDATE"
+);
+if ($assignment === false) {
+    mysqli_rollback($koneksi);
+    http_response_code(500);
+    echo json_encode(["status" => "error", "message" => "Gagal memeriksa penugasan mapel."]);
+    exit();
+}
+mysqli_stmt_bind_param($assignment, "i", $assignmentId);
+if (!mysqli_stmt_execute($assignment)) {
+    mysqli_stmt_close($assignment);
+    mysqli_rollback($koneksi);
+    http_response_code(500);
+    echo json_encode(["status" => "error", "message" => "Gagal memeriksa penugasan mapel."]);
+    exit();
+}
+$assignmentResult = mysqli_stmt_get_result($assignment);
+$assignmentData = mysqli_fetch_assoc($assignmentResult);
+mysqli_stmt_close($assignment);
+if ($assignmentData === null) {
+    mysqli_rollback($koneksi);
+    http_response_code(400);
+    echo json_encode(["status" => "error", "message" => "Penugasan kelas, mapel, atau guru tidak aktif/tidak ditemukan."]);
+    exit();
+}
+
 if ($scheduleId !== null) {
-    $existing = mysqli_prepare(
-        $koneksi,
-        "SELECT id FROM jadwal_pelajaran WHERE id = ? LIMIT 1 FOR UPDATE"
-    );
+    $existing = mysqli_prepare($koneksi, "SELECT id FROM jadwal_pelajaran WHERE id = ? LIMIT 1 FOR UPDATE");
     if ($existing === false) {
         mysqli_rollback($koneksi);
         http_response_code(500);
@@ -88,8 +116,7 @@ if ($scheduleId !== null) {
         echo json_encode(["status" => "error", "message" => "Gagal memeriksa jadwal yang akan diubah."]);
         exit();
     }
-    $existingResult = mysqli_stmt_get_result($existing);
-    $exists = mysqli_num_rows($existingResult) === 1;
+    $exists = mysqli_num_rows(mysqli_stmt_get_result($existing)) === 1;
     mysqli_stmt_close($existing);
     if (!$exists) {
         mysqli_rollback($koneksi);
@@ -99,29 +126,47 @@ if ($scheduleId !== null) {
     }
 }
 
-$conflictSql = "SELECT id FROM jadwal_pelajaran
-     WHERE hari = ? AND (kelas = ? OR guru_pengampu = ?)
-       AND jam_mulai < ? AND jam_selesai > ?";
+$conflictSql = "SELECT j.id
+                FROM jadwal_pelajaran j
+                JOIN kelas_mapel km ON km.id = j.kelas_mapel_id
+                WHERE j.hari = ?
+                  AND (km.kelas_id = ? OR km.guru_id = ?)
+                  AND km.tahun_ajaran = ?
+                  AND j.jam_mulai < ? AND j.jam_selesai > ?";
 if ($scheduleId !== null) {
     $conflictSql .= " AND id <> ?";
 }
 $conflictSql .= " LIMIT 1 FOR UPDATE";
-$check = mysqli_prepare(
-    $koneksi,
-    $conflictSql
-);
+$check = mysqli_prepare($koneksi, $conflictSql);
 if ($check === false) {
     mysqli_rollback($koneksi);
     http_response_code(500);
     echo json_encode(["status" => "error", "message" => "Gagal memeriksa bentrok jadwal."]);
     exit();
 }
-
-$bindTypes = $scheduleId === null ? "sssss" : "sssssi";
 if ($scheduleId === null) {
-    mysqli_stmt_bind_param($check, $bindTypes, $hari, $kelas, $guru, $selesai, $mulai);
+    mysqli_stmt_bind_param(
+        $check,
+        "siisss",
+        $hari,
+        $assignmentData['kelas_id'],
+        $assignmentData['guru_id'],
+        $assignmentData['tahun_ajaran'],
+        $selesai,
+        $mulai
+    );
 } else {
-    mysqli_stmt_bind_param($check, $bindTypes, $hari, $kelas, $guru, $selesai, $mulai, $scheduleId);
+    mysqli_stmt_bind_param(
+        $check,
+        "siisssi",
+        $hari,
+        $assignmentData['kelas_id'],
+        $assignmentData['guru_id'],
+        $assignmentData['tahun_ajaran'],
+        $selesai,
+        $mulai,
+        $scheduleId
+    );
 }
 if (!mysqli_stmt_execute($check)) {
     mysqli_stmt_close($check);
@@ -130,10 +175,8 @@ if (!mysqli_stmt_execute($check)) {
     echo json_encode(["status" => "error", "message" => "Gagal memeriksa bentrok jadwal."]);
     exit();
 }
-$conflicts = mysqli_stmt_get_result($check);
-$hasConflict = mysqli_num_rows($conflicts) > 0;
+$hasConflict = mysqli_num_rows(mysqli_stmt_get_result($check)) > 0;
 mysqli_stmt_close($check);
-
 if ($hasConflict) {
     mysqli_rollback($koneksi);
     http_response_code(409);
@@ -143,11 +186,11 @@ if ($hasConflict) {
 
 $sql = $scheduleId === null
     ? "INSERT INTO jadwal_pelajaran
-       (kelas, hari, jam_mulai, jam_selesai, mata_pelajaran, guru_pengampu, ruangan)
-       VALUES (?, ?, ?, ?, ?, ?, ?)"
+       (hari, jam_mulai, jam_selesai, ruangan, kelas_mapel_id)
+       VALUES (?, ?, ?, ?, ?)"
     : "UPDATE jadwal_pelajaran
-       SET kelas = ?, hari = ?, jam_mulai = ?, jam_selesai = ?,
-           mata_pelajaran = ?, guru_pengampu = ?, ruangan = ?
+       SET hari = ?, jam_mulai = ?, jam_selesai = ?,
+           ruangan = ?, kelas_mapel_id = ?
        WHERE id = ?";
 $save = mysqli_prepare($koneksi, $sql);
 if ($save === false) {
@@ -156,11 +199,27 @@ if ($save === false) {
     echo json_encode(["status" => "error", "message" => "Gagal menyiapkan penyimpanan jadwal."]);
     exit();
 }
-
 if ($scheduleId === null) {
-    mysqli_stmt_bind_param($save, "sssssss", $kelas, $hari, $mulai, $selesai, $mapel, $guru, $ruangan);
+    mysqli_stmt_bind_param(
+        $save,
+        "ssssi",
+        $hari,
+        $mulai,
+        $selesai,
+        $ruangan,
+        $assignmentId
+    );
 } else {
-    mysqli_stmt_bind_param($save, "sssssssi", $kelas, $hari, $mulai, $selesai, $mapel, $guru, $ruangan, $scheduleId);
+    mysqli_stmt_bind_param(
+        $save,
+        "ssssii",
+        $hari,
+        $mulai,
+        $selesai,
+        $ruangan,
+        $assignmentId,
+        $scheduleId
+    );
 }
 if (!mysqli_stmt_execute($save)) {
     mysqli_stmt_close($save);
@@ -177,8 +236,10 @@ if (!mysqli_commit($koneksi)) {
     echo json_encode(["status" => "error", "message" => "Gagal menyelesaikan penyimpanan jadwal."]);
     exit();
 }
+
 echo json_encode([
     "status" => "success",
     "message" => $scheduleId === null ? "Jadwal berhasil disimpan." : "Jadwal berhasil diperbarui."
 ]);
 mysqli_close($koneksi);
+?>

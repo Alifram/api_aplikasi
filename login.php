@@ -11,10 +11,13 @@ if (is_array($input) &&
     $identifier = mysqli_real_escape_string($koneksi, trim($input['identifier']));
     $password = $input['password'];
 
-    $query = "SELECT id, nomor_induk, nama_lengkap, email, role, kelas_diajar, password 
-              FROM users 
-              WHERE (email = '$identifier' OR nomor_induk = '$identifier') 
-              AND is_deleted = 0";
+    $query = "SELECT u.id, u.nomor_induk, u.nama_lengkap, u.email, u.role,
+                     u.kelas_id, k.nama AS kelas_nama, k.nama AS kelas_diajar,
+                     u.tahun_angkatan, u.password
+              FROM users u
+              LEFT JOIN kelas k ON k.id = u.kelas_id
+              WHERE (u.email = '$identifier' OR u.nomor_induk = '$identifier')
+                AND u.is_deleted = 0";
               
     $result = mysqli_query($koneksi, $query);
 

@@ -1,84 +1,143 @@
 <?php
-header("Content-Type: application/json");
 header("Access-Control-Allow-Origin: *");
-header("Access-Control-Allow-Methods: POST");
-header("Access-Control-Allow-Headers: Content-Type");
+header("Access-Control-Allow-Methods: POST, OPTIONS");
+header("Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With");
+header("Content-Type: application/json; charset=UTF-8");
 
-// 1. MENYERTAKAN KONEKSI DATABASE BAWAAN
-include 'koneksi.php';
-
-// Menangkap kiriman data JSON dari aplikasi Flutter
-$input = json_decode(file_get_contents('php://input'), true);
-
-if (
-    isset($input['nomor_induk']) && 
-    isset($input['nama_lengkap']) && 
-    isset($input['email']) && 
-    isset($input['password']) && 
-    isset($input['role'])
-) {
-    foreach (['nomor_induk', 'nama_lengkap', 'email', 'role'] as $field) {
-        if (!is_string($input[$field])) {
-            http_response_code(400);
-            echo json_encode(["status" => "error", "message" => "Format data pendaftaran tidak valid."]);
-            exit();
-        }
-    }
-    // Sanitasi data input untuk mencegah celah SQL Injection
-    $nomor_induk   = mysqli_real_escape_string($koneksi, $input['nomor_induk']);
-    $nama_lengkap  = mysqli_real_escape_string($koneksi, $input['nama_lengkap']);
-    $email         = mysqli_real_escape_string($koneksi, $input['email']);
-    $role          = mysqli_real_escape_string($koneksi, $input['role']);
-    if (!is_string($input['password']) || strlen($input['password']) < 6) {
-        echo json_encode(["status" => "error", "message" => "Password minimal 6 karakter."]);
-        exit();
-    }
-    $password = mysqli_real_escape_string($koneksi, password_hash($input['password'], PASSWORD_DEFAULT));
-
-    // MENANGKAP VARIABEL KELAS & ANGKATAN SECARA FLEKSIBEL
-    $kelas_diajar   = isset($input['kelas_diajar']) ? mysqli_real_escape_string($koneksi, $input['kelas_diajar']) : 'Belum Diatur';
-    
-    // Deteksi kiriman tahun angkatan dari Flutter (Konversi string angka menjadi Integer murni)
-    $tahun_angkatan_raw = isset($input['tahun_angkatan']) ? trim($input['tahun_angkatan']) : '';
-    if ($tahun_angkatan_raw !== '' && $tahun_angkatan_raw !== 'null' && is_numeric($tahun_angkatan_raw)) {
-        $tahun_angkatan = (int)$tahun_angkatan_raw;
-    } else {
-        $tahun_angkatan = "NULL";
-    }
-
-    // 2. CEK REDUNDANSI: Pastikan Nomor Induk atau Email belum pernah terdaftar di madrasah
-    $cekUser = "SELECT id FROM users WHERE nomor_induk = '$nomor_induk' OR email = '$email'";
-    $hasilCek = mysqli_query($koneksi, $cekUser);
-
-    if (mysqli_num_rows($hasilCek) > 0) {
-        echo json_encode([
-            "status"  => "error",
-            "message" => "Gagal! Nomor Induk atau Alamat Email tersebut sudah terdaftar di sistem sekolah."
-        ]);
-        exit();
-    }
-
-    // 3. KUERI EKSEKUSI DEFINITIF (Sudah dibersihkan dari duplikasi & anti-bias NULL)
-    $query = "INSERT INTO users (nomor_induk, nama_lengkap, email, password, role, kelas_diajar, tahun_angkatan, is_deleted) 
-              VALUES ('$nomor_induk', '$nama_lengkap', '$email', '$password', '$role', '$kelas_diajar', " . ($tahun_angkatan === "NULL" ? "NULL" : "$tahun_angkatan") . ", 0)";
-
-    if (mysqli_query($koneksi, $query)) {
-        echo json_encode([
-            "status"  => "success",
-            "message" => "Akun baru sebagai " . ucfirst($role) . " berhasil didaftarkan secara permanen!"
-        ]);
-    } else {
-        echo json_encode([
-            "status"  => "error",
-            "message" => "Gagal menyimpan ke database: " . mysqli_error($koneksi)
-        ]);
-    }
-} else {
-    echo json_encode([
-        "status"  => "error",
-        "message" => "Parameter input pendaftaran dari aplikasi tidak lengkap."
-    ]);
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+    exit(0);
 }
 
+include "koneksi.php";
+
+$input = json_decode(file_get_contents('php://input'), true);
+$required = ['nomor_induk', 'nama_lengkap', 'email', 'password', 'role'];
+if (!is_array($input)) {
+    http_response_code(400);
+    echo json_encode(["status" => "error", "message" => "Format JSON tidak valid."]);
+    exit();
+}
+foreach ($required as $field) {
+    if (!isset($input[$field]) || !is_string($input[$field]) || trim($input[$field]) === '') {
+        http_response_code(400);
+        echo json_encode(["status" => "error", "message" => "Data pendaftaran belum lengkap."]);
+        exit();
+    }
+}
+
+$studentNumber = trim($input['nomor_induk']);
+$fullName = trim($input['nama_lengkap']);
+$email = trim($input['email']);
+$password = $input['password'];
+$role = trim($input['role']);
+$classId = null;
+$admissionYear = null;
+
+if (!in_array($role, ['siswa', 'guru', 'admin'], true) ||
+    strlen($password) < 6 ||
+    !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+    http_response_code(400);
+    echo json_encode(["status" => "error", "message" => "Role, email, atau password tidak valid."]);
+    exit();
+}
+
+if (in_array($role, ['siswa', 'guru'], true)) {
+    $classId = isset($input['kelas_id']) ? filter_var($input['kelas_id'], FILTER_VALIDATE_INT) : false;
+    if ($classId === false || $classId <= 0) {
+        http_response_code(400);
+        echo json_encode(["status" => "error", "message" => "Kelas wajib dipilih dari daftar kelas aktif."]);
+        exit();
+    }
+}
+if ($role === 'siswa') {
+    $admissionYear = isset($input['tahun_angkatan'])
+        ? filter_var($input['tahun_angkatan'], FILTER_VALIDATE_INT)
+        : false;
+    if ($admissionYear === false || $admissionYear < 2000 || $admissionYear > ((int)date('Y') + 5)) {
+        http_response_code(400);
+        echo json_encode(["status" => "error", "message" => "Tahun angkatan siswa tidak valid."]);
+        exit();
+    }
+}
+
+if ($classId !== null) {
+    $classStmt = mysqli_prepare($koneksi, "SELECT id FROM kelas WHERE id = ? AND aktif = 1 LIMIT 1");
+    if ($classStmt === false) {
+        http_response_code(500);
+        echo json_encode(["status" => "error", "message" => "Gagal menyiapkan validasi kelas."]);
+        exit();
+    }
+    mysqli_stmt_bind_param($classStmt, "i", $classId);
+    if (!mysqli_stmt_execute($classStmt)) {
+        mysqli_stmt_close($classStmt);
+        http_response_code(500);
+        echo json_encode(["status" => "error", "message" => "Gagal memvalidasi kelas."]);
+        exit();
+    }
+    $classExists = mysqli_num_rows(mysqli_stmt_get_result($classStmt)) === 1;
+    mysqli_stmt_close($classStmt);
+    if (!$classExists) {
+        http_response_code(400);
+        echo json_encode(["status" => "error", "message" => "Kelas tidak ditemukan atau tidak aktif."]);
+        exit();
+    }
+}
+
+$duplicate = mysqli_prepare(
+    $koneksi,
+    "SELECT id FROM users WHERE nomor_induk = ? OR email = ? LIMIT 1"
+);
+if ($duplicate === false) {
+    http_response_code(500);
+    echo json_encode(["status" => "error", "message" => "Gagal memeriksa data akun."]);
+    exit();
+}
+mysqli_stmt_bind_param($duplicate, "ss", $studentNumber, $email);
+if (!mysqli_stmt_execute($duplicate)) {
+    mysqli_stmt_close($duplicate);
+    http_response_code(500);
+    echo json_encode(["status" => "error", "message" => "Gagal memeriksa data akun."]);
+    exit();
+}
+$alreadyExists = mysqli_num_rows(mysqli_stmt_get_result($duplicate)) > 0;
+mysqli_stmt_close($duplicate);
+if ($alreadyExists) {
+    http_response_code(409);
+    echo json_encode(["status" => "error", "message" => "Nomor induk atau email sudah terdaftar."]);
+    exit();
+}
+
+$passwordHash = password_hash($password, PASSWORD_DEFAULT);
+$insert = mysqli_prepare(
+    $koneksi,
+    "INSERT INTO users
+     (nomor_induk, nama_lengkap, email, password, role, kelas_id, tahun_angkatan, is_deleted)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 0)"
+);
+if ($insert === false) {
+    http_response_code(500);
+    echo json_encode(["status" => "error", "message" => "Gagal menyiapkan pendaftaran akun."]);
+    exit();
+}
+mysqli_stmt_bind_param(
+    $insert,
+    "sssssii",
+    $studentNumber,
+    $fullName,
+    $email,
+    $passwordHash,
+    $role,
+    $classId,
+    $admissionYear
+);
+if (!mysqli_stmt_execute($insert)) {
+    mysqli_stmt_close($insert);
+    http_response_code(500);
+    echo json_encode(["status" => "error", "message" => "Gagal menyimpan akun."]);
+    exit();
+}
+mysqli_stmt_close($insert);
+
+echo json_encode(["status" => "success", "message" => "Akun baru berhasil didaftarkan."]);
 mysqli_close($koneksi);
 ?>

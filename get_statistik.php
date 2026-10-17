@@ -1,62 +1,71 @@
 <?php
-header("Content-Type: application/json");
+header("Content-Type: application/json; charset=UTF-8");
 header("Access-Control-Allow-Origin: *");
-header("Access-Control-Allow-Methods: GET");
-header("Access-Control-Allow-Headers: Content-Type");
+header("Access-Control-Allow-Methods: GET, OPTIONS");
+header("Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With");
 
-// Menyertakan file koneksi database bawaan Anda
-include 'koneksi.php'; 
-
-// Tangkap parameter angkatan dari Flutter (Otomatis ke tahun berjalan jika kosong)
-$angkatan = isset($_GET['angkatan']) ? mysqli_real_escape_string($koneksi, $_GET['angkatan']) : date("Y");
-
-// Inisialisasi struktur template data agar Flutter tidak crash
-$responData = [];
-for ($i = 1; $i <= 6; $i++) {
-    $responData["Kelas $i"] = [
-        "semester_1" => 0.0,
-        "semester_2" => 0.0
-    ];
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+    exit(0);
 }
 
-// Kolom NULL berarti belum diinput; nilai 0 tetap dihitung sebagai nilai yang sah.
-$query = "SELECT 
-            CASE TRIM(kelas)
-              WHEN '1' THEN 'Kelas 1'
-              WHEN '2' THEN 'Kelas 2'
-              WHEN '3' THEN 'Kelas 3'
-              WHEN '4' THEN 'Kelas 4'
-              WHEN '5' THEN 'Kelas 5'
-              WHEN '6' THEN 'Kelas 6'
-              ELSE TRIM(kelas)
-            END AS nama_kelas,
-            semester AS nomor_semester,
-            SUM(COALESCE(nilai_tugas, 0) + COALESCE(nilai_uts, 0) + COALESCE(nilai_uas, 0)) /
-              NULLIF(SUM((nilai_tugas IS NOT NULL) + (nilai_uts IS NOT NULL) + (nilai_uas IS NOT NULL)), 0) AS rerata_nilai
-          FROM nilai_raport 
-          WHERE tahun_angkatan = '$angkatan'
-          GROUP BY nama_kelas, semester";
+include "koneksi.php";
 
-$result = mysqli_query($koneksi, $query);
+$admissionYear = isset($_GET['angkatan'])
+    ? filter_var($_GET['angkatan'], FILTER_VALIDATE_INT)
+    : (int)date('Y');
+if ($admissionYear === false || $admissionYear < 2000 || $admissionYear > (int)date('Y') + 5) {
+    http_response_code(400);
+    echo json_encode(["status" => "error", "message" => "Tahun angkatan tidak valid."]);
+    exit();
+}
 
-if ($result) {
-    while ($row = mysqli_fetch_assoc($result)) {
-        $kelasKey = trim($row['nama_kelas']); 
-        $semId = ((int)$row['nomor_semester'] === 1) ? "semester_1" : "semester_2";
-        
-        if (isset($responData[$kelasKey])) {
-            $responData[$kelasKey][$semId] = round((double)$row['rerata_nilai'], 1);
-        }
+$classesResult = mysqli_query($koneksi, "SELECT nama FROM kelas WHERE aktif = 1 ORDER BY nama");
+if ($classesResult === false) {
+    http_response_code(500);
+    echo json_encode(["status" => "error", "message" => "Gagal mengambil daftar kelas."]);
+    exit();
+}
+$data = [];
+while ($class = mysqli_fetch_assoc($classesResult)) {
+    $data[$class['nama']] = ["semester_1" => 0.0, "semester_2" => 0.0];
+}
+
+$stmt = mysqli_prepare(
+    $koneksi,
+    "SELECT k.nama AS nama_kelas, n.semester AS nomor_semester,
+            SUM(COALESCE(n.nilai_tugas, 0) + COALESCE(n.nilai_uts, 0) + COALESCE(n.nilai_uas, 0)) /
+            NULLIF(SUM((n.nilai_tugas IS NOT NULL) + (n.nilai_uts IS NOT NULL) + (n.nilai_uas IS NOT NULL)), 0)
+              AS rerata_nilai
+     FROM nilai_raport n
+     JOIN kelas_mapel km ON km.id = n.kelas_mapel_id
+     JOIN kelas k ON k.id = km.kelas_id
+     WHERE n.tahun_angkatan = ?
+     GROUP BY k.id, k.nama, n.semester"
+);
+if ($stmt === false) {
+    http_response_code(500);
+    echo json_encode(["status" => "error", "message" => "Gagal menyiapkan statistik nilai."]);
+    exit();
+}
+mysqli_stmt_bind_param($stmt, "i", $admissionYear);
+if (!mysqli_stmt_execute($stmt)) {
+    mysqli_stmt_close($stmt);
+    http_response_code(500);
+    echo json_encode(["status" => "error", "message" => "Gagal menghitung statistik nilai."]);
+    exit();
+}
+
+$result = mysqli_stmt_get_result($stmt);
+while ($row = mysqli_fetch_assoc($result)) {
+    $className = $row['nama_kelas'];
+    if (!isset($data[$className])) {
+        continue;
     }
-
-    echo json_encode([
-        "status" => "success",
-        "data" => $responData
-    ]);
-} else {
-    echo json_encode([
-        "status" => "error",
-        "message" => "Gagal memproses data statistik: " . mysqli_error($koneksi)
-    ]);
+    $semesterKey = (int)$row['nomor_semester'] === 1 ? 'semester_1' : 'semester_2';
+    $data[$className][$semesterKey] = round((float)$row['rerata_nilai'], 1);
 }
+mysqli_stmt_close($stmt);
+
+echo json_encode(["status" => "success", "data" => $data]);
+mysqli_close($koneksi);
 ?>
