@@ -44,31 +44,94 @@ if (!$isAdmin) {
     exit();
 }
 
-$classIds = [];
-$classQuery = mysqli_prepare($koneksi, "SELECT id FROM kelas WHERE nama = ? AND aktif = 1 LIMIT 1");
-if ($classQuery === false) {
+// Alumni is the destination for graduating students; create/reactivate it as needed.
+$alumniQuery = mysqli_prepare(
+    $koneksi,
+    "SELECT id, aktif FROM kelas WHERE LOWER(TRIM(nama)) = 'alumni' LIMIT 1"
+);
+if ($alumniQuery === false || !mysqli_stmt_execute($alumniQuery)) {
+    if ($alumniQuery !== false) mysqli_stmt_close($alumniQuery);
     http_response_code(500);
-    echo json_encode(["status" => "error", "message" => "Gagal menyiapkan daftar kelas."]);
+    echo json_encode(["status" => "error", "message" => "Gagal memeriksa kelas Alumni."]);
     exit();
 }
-foreach (['Kelas 1', 'Kelas 2', 'Kelas 3', 'Kelas 4', 'Kelas 5', 'Kelas 6', 'Alumni'] as $name) {
-    mysqli_stmt_bind_param($classQuery, "s", $name);
-    if (!mysqli_stmt_execute($classQuery)) {
-        mysqli_stmt_close($classQuery);
+$alumni = mysqli_fetch_assoc(mysqli_stmt_get_result($alumniQuery));
+mysqli_stmt_close($alumniQuery);
+
+if ($alumni === null) {
+    $createAlumni = mysqli_prepare(
+        $koneksi,
+        "INSERT INTO kelas (nama, aktif) VALUES ('Alumni', 1)"
+    );
+    if ($createAlumni === false || !mysqli_stmt_execute($createAlumni)) {
+        if ($createAlumni !== false) mysqli_stmt_close($createAlumni);
         http_response_code(500);
-        echo json_encode(["status" => "error", "message" => "Gagal mengambil daftar kelas."]);
+        echo json_encode(["status" => "error", "message" => "Gagal menyiapkan kelas Alumni."]);
         exit();
     }
-    $row = mysqli_fetch_assoc(mysqli_stmt_get_result($classQuery));
-    if ($row === null) {
-        mysqli_stmt_close($classQuery);
-        http_response_code(400);
-        echo json_encode(["status" => "error", "message" => "Kelas aktif '$name' wajib tersedia sebelum kenaikan kelas massal."]);
+    mysqli_stmt_close($createAlumni);
+} elseif ((int)$alumni['aktif'] !== 1) {
+    $activateAlumni = mysqli_prepare(
+        $koneksi,
+        "UPDATE kelas SET aktif = 1 WHERE id = ?"
+    );
+    if ($activateAlumni === false) {
+        http_response_code(500);
+        echo json_encode(["status" => "error", "message" => "Gagal mengaktifkan kelas Alumni."]);
         exit();
     }
-    $classIds[$name] = (int)$row['id'];
+    $alumniId = (int)$alumni['id'];
+    mysqli_stmt_bind_param($activateAlumni, "i", $alumniId);
+    if (!mysqli_stmt_execute($activateAlumni)) {
+        mysqli_stmt_close($activateAlumni);
+        http_response_code(500);
+        echo json_encode(["status" => "error", "message" => "Gagal mengaktifkan kelas Alumni."]);
+        exit();
+    }
+    mysqli_stmt_close($activateAlumni);
 }
-mysqli_stmt_close($classQuery);
+
+$classesResult = mysqli_query(
+    $koneksi,
+    "SELECT id, nama FROM kelas WHERE aktif = 1"
+);
+if ($classesResult === false) {
+    http_response_code(500);
+    echo json_encode(["status" => "error", "message" => "Gagal mengambil daftar kelas."]);
+    exit();
+}
+$normalizeClassName = static function (string $name): string {
+    return strtolower((string)preg_replace('/[^a-z0-9]/i', '', trim($name)));
+};
+$classIds = [];
+while ($class = mysqli_fetch_assoc($classesResult)) {
+    $normalizedName = $normalizeClassName($class['nama']);
+    if ($normalizedName === 'alumni') {
+        $classIds['Alumni'] = (int)$class['id'];
+        continue;
+    }
+
+    $number = null;
+    if (preg_match('/^(?:kelas)?([1-6])$/i', $normalizedName, $matches)) {
+        $number = (int)$matches[1];
+    }
+    if ($number !== null) {
+        $classIds["Kelas $number"] = (int)$class['id'];
+    }
+}
+
+$missingClasses = [];
+foreach (['Kelas 1', 'Kelas 2', 'Kelas 3', 'Kelas 4', 'Kelas 5', 'Kelas 6', 'Alumni'] as $name) {
+    if (!isset($classIds[$name])) $missingClasses[] = $name;
+}
+if ($missingClasses !== []) {
+    http_response_code(400);
+    echo json_encode([
+        "status" => "error",
+        "message" => "Kelas aktif berikut belum tersedia: " . implode(', ', $missingClasses) . ". Periksa daftar kelas sebelum mencoba lagi."
+    ]);
+    exit();
+}
 
 mysqli_begin_transaction($koneksi);
 $update = mysqli_prepare(
