@@ -49,16 +49,34 @@ $gradeColumn = $gradeColumns[$gradeType];
 
 mysqli_begin_transaction($koneksi);
 
+
 $assignment = mysqli_prepare(
     $koneksi,
     "SELECT km.kelas_id, km.guru_id, km.tahun_ajaran,
             k.nama AS kelas, mp.nama AS mata_pelajaran
      FROM kelas_mapel km
-     JOIN kelas k ON k.id = km.kelas_id AND k.aktif = 1
-     JOIN mata_pelajaran mp ON mp.id = km.mata_pelajaran_id AND mp.aktif = 1
-     JOIN users g ON g.id = km.guru_id AND g.role = 'guru' AND g.is_deleted = 0
-     WHERE km.id = ? AND km.guru_id = ? AND km.aktif = 1
-     LIMIT 1 FOR UPDATE"
+     JOIN kelas k
+       ON k.id = km.kelas_id
+      AND k.aktif = 1
+     JOIN mata_pelajaran mp
+       ON mp.id = km.mata_pelajaran_id
+      AND mp.aktif = 1
+     JOIN users g
+       ON g.id = km.guru_id
+      AND g.role = 'guru'
+      AND g.is_deleted = 0
+      AND (
+          g.jenis_guru = 'guru_mapel'
+          OR (
+              g.jenis_guru = 'guru_kelas'
+              AND g.kelas_id = km.kelas_id
+          )
+      )
+     WHERE km.id = ?
+       AND km.guru_id = ?
+       AND km.aktif = 1
+     LIMIT 1
+     FOR UPDATE"
 );
 if ($assignment === false) {
     mysqli_rollback($koneksi);

@@ -32,6 +32,22 @@ $password = $input['password'];
 $role = trim($input['role']);
 $classId = null;
 $admissionYear = null;
+$jenisGuru = null;
+
+if ($role === 'guru') {
+    $jenisGuru = isset($input['jenis_guru'])
+        ? trim((string)$input['jenis_guru'])
+        : '';
+
+    if (!in_array($jenisGuru, ['guru_kelas', 'guru_mapel'], true)) {
+        http_response_code(400);
+        echo json_encode([
+            "status" => "error",
+            "message" => "Jenis guru wajib dipilih dengan benar."
+        ]);
+        exit();
+    }
+}
 
 if (!in_array($role, ['siswa', 'guru', 'admin'], true) ||
     strlen($password) < 6 ||
@@ -111,8 +127,18 @@ $passwordHash = password_hash($password, PASSWORD_DEFAULT);
 $insert = mysqli_prepare(
     $koneksi,
     "INSERT INTO users
-     (nomor_induk, nama_lengkap, email, password, role, kelas_id, tahun_angkatan, is_deleted)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 0)"
+     (
+         nomor_induk,
+         nama_lengkap,
+         email,
+         password,
+         role,
+         jenis_guru,
+         kelas_id,
+         tahun_angkatan,
+         is_deleted
+     )
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)"
 );
 if ($insert === false) {
     http_response_code(500);
@@ -121,12 +147,13 @@ if ($insert === false) {
 }
 mysqli_stmt_bind_param(
     $insert,
-    "sssssii",
+    "ssssssii",
     $studentNumber,
     $fullName,
     $email,
     $passwordHash,
     $role,
+    $jenisGuru,
     $classId,
     $admissionYear
 );

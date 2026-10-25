@@ -26,14 +26,36 @@ if (isset($_GET['kelas_id']) && ($classId === false || $classId <= 0)) {
     exit();
 }
 
+
 $queries = [
-    'kelas' => "SELECT id, nama FROM kelas WHERE aktif = 1 ORDER BY nama",
-    'mata_pelajaran' => "SELECT id, kode, nama FROM mata_pelajaran WHERE aktif = 1 ORDER BY nama",
-    'guru' => "SELECT id, nama_lengkap, kelas_id FROM users
-               WHERE role = 'guru' AND is_deleted = 0" .
-               ($classId === null ? "" : " AND kelas_id = " . (int)$classId) .
-               " ORDER BY nama_lengkap"
+    'kelas' => "SELECT id, nama
+                FROM kelas
+                WHERE aktif = 1
+                ORDER BY nama",
+
+    'mata_pelajaran' => "SELECT id, kode, nama
+                         FROM mata_pelajaran
+                         WHERE aktif = 1
+                         ORDER BY nama",
+
+    'guru' => "SELECT id, nama_lengkap, kelas_id, jenis_guru
+           FROM users
+           WHERE role = 'guru'
+             AND is_deleted = 0
+             AND (
+                 jenis_guru = 'guru_mapel'
+                 OR (
+                     jenis_guru = 'guru_kelas'
+                     AND " . (
+                         $classId !== null
+                             ? "kelas_id = " . (int)$classId
+                             : "kelas_id IS NOT NULL"
+                     ) . "
+                 )
+             )
+           ORDER BY nama_lengkap"
 ];
+
 $data = [];
 foreach ($queries as $key => $query) {
     $result = mysqli_query($koneksi, $query);
